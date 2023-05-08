@@ -28,7 +28,7 @@
 
 
 После успешного захода и открытия чата, нужно экспортировать сами куки. Для этого нужен следующий плагин:
-* Хром/Эдж: https://chrome.google.com/webstore/detail/user-agent-switcher-and-m/bhchdcejhohfmigjafbampogmaanbfkg
+* Хром/Эдж: https://chrome.google.com/webstore/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm
 * Лиса: https://addons.mozilla.org/en-US/firefox/addon/cookie-editor/
 
 Открываем расширение. 
