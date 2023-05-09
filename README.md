@@ -8,7 +8,7 @@
 8к токенов (лично у меня 32к не схавал).</br>
 Кодинг с рабочим стримом (плюс в сравнении со скалой).</br>
 Подтягивать данные из интернета.</br></br>
-![image](https://user-images.githubusercontent.com/129290831/236729062-a272ef8a-5f07-4c59-9021-f9a7a504f9fd.png)</br></br>
+![image](https://github.com/Barbariskaa/Biba/assets/129290831/b5176621-4a1f-4b57-9c7f-865861825c30)</br></br>
 Подтягивать подсказки из бинга.</br></br>
 ![image](https://user-images.githubusercontent.com/129290831/236729981-42f4cbf8-abbd-4deb-9a70-1a1cb5917119.png)
 
