@@ -326,6 +326,7 @@ class SSEHandler(web.View):
                 print("Таймаут.")
             else:
                 print("Ошибка: ", str(e))
+        return self.response
 
 
 app = web.Application()
