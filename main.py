@@ -310,8 +310,10 @@ class SSEHandler(web.View):
         except Exception as e:
             if str(e) == "'messages'":
                 print("Ошибка:", str(e), "\nПроблема с учеткой. Либо забанили, либо нужно залогиниться.")
-            if str(e) == " " or str(e) == "":
+            elif str(e) == " " or str(e) == "":
                 print("Таймаут.")
+            elif str(e) == "received 1000 (OK); then sent 1000 (OK)":
+                print("Слишком много токенов. Больше 14000 токенов не принимает.")
             else:
                 print("Ошибка: ", str(e))
         return self.response
