@@ -10,6 +10,10 @@ from urllib.parse import urlparse
 PORT = 8081
 HOST = "127.0.0.1"
 
+def replace_with_array(match, urls):
+    index = int(match.group(1)) - 1
+    return f" [{urlparse(urls[index]).hostname}]({urls[index]})"
+
 def prepare_response(*json_objects):
     response = b""
 
@@ -168,7 +172,7 @@ class SSEHandler(web.View):
                     message = response["arguments"][0]["messages"][0]
                     match message.get("messageType"):
                         case "InternalSearchQuery":
-                            print(f"Поиск в Бинге:\n{message['hiddenText']}\n\n")
+                            print(f"Поиск в Бинге:", message['hiddenText'])
                         case "InternalSearchResult":
                             if 'hiddenText' in message:
                                 search = message['hiddenText'] = message['hiddenText'][len("```json\n"):]
@@ -205,39 +209,38 @@ class SSEHandler(web.View):
                                 print("\nСообщение отозвано.")
                                 break
                             else:
-                                if stream:
-                                    def replace_with_array(match):
-                                        index = int(match.group(1)) - 1
-                                        return f" [{urlparse(urls[index]).hostname}]({urls[index]})"
+                                content = message['text'][wrote:]
+                                content = content.replace('\\"', '"')
+                                placeholder_number = r'\^(\d+)\^'
 
-                                    content = message['text'][wrote:]
-                                    placeholder_number = r'\^(\d+)\^'
-
-                                    if got_number:
-                                        placeholder_flag = False
-                                        if not re.findall(']', content):
-                                            content = placeholder_wrap + content
-                                        else:
-                                            content = placeholder_wrap
-                                        got_number = False
-                                    if content == "[":
+                                if got_number:
+                                    if "]" not in content:
+                                        content = placeholder_wrap + content
+                                    else:
+                                        content = placeholder_wrap
+                                    got_number = False
+                                else:
+                                    if "[" in content:
                                         placeholder_flag = True
-                                    number_matches = re.findall(placeholder_number, content)
 
-                                    if number_matches:
-                                        if placeholder_flag:
-                                            placeholder_wrap = re.sub(placeholder_number,
-                                                                      replace_with_array,
-                                                                      message['text'][wrote:]
-                                                                      )
-                                            got_number = True
-                                        else:
-                                            content = re.sub(placeholder_number,
-                                                             replace_with_array,
-                                                             message['text'][wrote:]
-                                                             )
+                                number_matches = re.findall(placeholder_number, content)
 
-                                    if not placeholder_flag:
+                                if number_matches:
+                                    if placeholder_flag:
+                                        placeholder_wrap = re.sub(placeholder_number,
+                                                                  lambda match: replace_with_array(match, urls),
+                                                                  message['text'][wrote:]
+                                                                  )
+                                        got_number = True
+                                        placeholder_flag = False
+                                    else:
+                                        content = re.sub(placeholder_number,
+                                                         lambda match: replace_with_array(match, urls),
+                                                         message['text'][wrote:]
+                                                         )
+                                if not (placeholder_flag or got_number):
+                                    if stream:
+
                                         data = {
                                             "id": self.id,
                                             "object": "chat.completion.chunk",
@@ -255,14 +258,13 @@ class SSEHandler(web.View):
                                         }
 
                                         await self.response.write(prepare_response(data))
-                                else:
-                                    non_stream_response += message['text'][wrote:]
+                                    else:
+                                        non_stream_response += content
 
                                 print(message["text"][wrote:], end="")
                                 wrote = len(message["text"])
 
                                 if "suggestedResponses" in message:
-                                    print(message)
                                     suggested_responses = '\n'.join(x["text"] for x in message["suggestedResponses"])
                                     suggested_responses = "\n```" + suggested_responses + "```"
                                     if stream:
@@ -286,20 +288,6 @@ class SSEHandler(web.View):
                                         else:
                                             await self.response.write(prepare_response(end_data, "DONE"))
                                     else:
-                                        #will fix the duplication later
-                                        def replace_with_array(match):
-                                            index = int(match.group(1)) - 1
-                                            return f" [{urlparse(urls[index]).hostname}]({urls[index]})"
-
-                                        placeholder_number = r'\[\^(\d+)\^\]'
-                                        number_matches = re.findall(placeholder_number, non_stream_response)
-
-                                        if number_matches:
-                                            non_stream_response = re.sub(placeholder_number,
-                                                                         replace_with_array,
-                                                                         non_stream_response
-                                                                         )
-
                                         if suggestion:
                                             non_stream_response = non_stream_response + suggested_responses
                                         await self.response.write(
