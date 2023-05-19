@@ -5,12 +5,44 @@ import random
 import string
 import json
 import re
+import sys
 from urllib.parse import urlparse
 
 PORT = 8081
 HOST = "127.0.0.1"
 
-def replace_with_array(match, urls):
+
+class LinkReplacer:
+    def __init__(self):
+        self.placeholder_wrap = ""
+        self.i = 0
+        self.urls = []
+        self.stash = ""
+        self.regex = r'\^(\d+)\^'
+
+    def process(self, content, urls):
+
+        if "[" not in content and self.i == 0:
+            return content
+
+        self.stash += content
+
+        if "[" in content:
+            self.i = 1
+            return ""
+        elif self.i == 1 and re.search(self.regex, self.stash):
+            self.i = 2
+            return ""
+        elif self.i == 1 and not re.search(self.regex, self.stash):
+            self.i = 0
+            return self.stash
+        elif self.i == 2:
+            result = re.sub(r'\[\^(\d+)\^\]', lambda match: create_hyperlink(match, urls), self.stash)
+            self.i = 0
+            self.stash = ""
+            return result
+
+def create_hyperlink(match, urls):
     index = int(match.group(1)) - 1
     return f" [{urlparse(urls[index]).hostname}]({urls[index]})"
 
@@ -78,7 +110,6 @@ class SSEHandler(web.View):
                    ]
                }
 
-        # Return JSON response
         return web.json_response(data)
 
     async def post(self):
@@ -154,10 +185,8 @@ class SSEHandler(web.View):
         async def output():
             print("\nФормируется запрос...")
 
+            link_replacer = LinkReplacer()
             non_stream_response = ""
-            placeholder_wrap = ""
-            placeholder_flag = False
-            got_number = False
             wrote = 0
 
             async for final, response in chatbot.ask_stream(
@@ -189,7 +218,6 @@ class SSEHandler(web.View):
                         case None:
                             if "cursor" in response["arguments"][0]:
                                 print("\nОтвет от сервера:\n")
-                                wrote = 0
                             if message.get("contentOrigin") == "Apology":
                                 if stream and wrote == 0:
                                     await self.response.write(prepare_response(filtered_data))
@@ -211,57 +239,35 @@ class SSEHandler(web.View):
                             else:
                                 content = message['text'][wrote:]
                                 content = content.replace('\\"', '"')
-                                placeholder_number = r'\^(\d+)\^'
 
-                                if got_number:
-                                    if "]" not in content:
-                                        content = placeholder_wrap + content
-                                    else:
-                                        content = placeholder_wrap
-                                    got_number = False
+                                if 'urls' in vars():
+                                    if urls:
+                                        content = link_replacer.process(content, urls)
+
+                                if stream:
+
+                                    data = {
+                                        "id": self.id,
+                                        "object": "chat.completion.chunk",
+                                        "created": self.created,
+                                        "model": "gpt-4",
+                                        "choices": [
+                                            {
+                                                "delta": {
+                                                    "content": content
+                                                },
+                                                "index": 0,
+                                                "finish_reason": "null"
+                                            }
+                                        ]
+                                    }
+
+                                    await self.response.write(prepare_response(data))
                                 else:
-                                    if "[" in content:
-                                        placeholder_flag = True
-
-                                number_matches = re.findall(placeholder_number, content)
-
-                                if number_matches:
-                                    if placeholder_flag:
-                                        placeholder_wrap = re.sub(placeholder_number,
-                                                                  lambda match: replace_with_array(match, urls),
-                                                                  message['text'][wrote:]
-                                                                  )
-                                        got_number = True
-                                        placeholder_flag = False
-                                    else:
-                                        content = re.sub(placeholder_number,
-                                                         lambda match: replace_with_array(match, urls),
-                                                         message['text'][wrote:]
-                                                         )
-                                if not (placeholder_flag or got_number):
-                                    if stream:
-
-                                        data = {
-                                            "id": self.id,
-                                            "object": "chat.completion.chunk",
-                                            "created": self.created,
-                                            "model": "gpt-4",
-                                            "choices": [
-                                                {
-                                                    "delta": {
-                                                        "content": content
-                                                    },
-                                                    "index": 0,
-                                                    "finish_reason": "null"
-                                                }
-                                            ]
-                                        }
-
-                                        await self.response.write(prepare_response(data))
-                                    else:
-                                        non_stream_response += content
+                                    non_stream_response += content
 
                                 print(message["text"][wrote:], end="")
+                                sys.stdout.flush()
                                 wrote = len(message["text"])
 
                                 if "suggestedResponses" in message:
@@ -305,6 +311,7 @@ class SSEHandler(web.View):
                         await self.response.write(prepare_response(filtered_data, end_data))
                     print("Сработал фильтр.")
                     await chatbot.close()
+
         try:
             await output()
         except Exception as e:
