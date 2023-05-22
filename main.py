@@ -6,10 +6,16 @@ import string
 import json
 import re
 import sys
+import tiktoken
 from urllib.parse import urlparse
 
 PORT = 8081
 HOST = "127.0.0.1"
+
+DESIRED_TOKENS = 500
+ASK_TO_CONTINUE_AS_A_ROLE = 'user' #user/system/assistant
+CONTINUATION_QUERY = "(continue roleplay from the sentence where you have left)"
+ASTERISK_FIX = True
 
 
 class LinkReplacer:
@@ -42,20 +48,71 @@ class LinkReplacer:
             self.stash = ""
             return result
 
+
+class OpenaiResponse:
+    def __init__(self, id, created, end=False, content="", stream=True):
+        self.id = id
+        self.created = created
+        self.end = end
+        self.content = content
+        self.stream = stream
+
+    def dict(self):
+        if self.stream:
+            data = {
+                "id": self.id,
+                "object": "chat.completion.chunk",
+                "created": self.created,
+                "model": "gpt-4",
+                "choices": [
+                    {
+                        "delta": {},
+                        "index": 0,
+                        "finish_reason": "null"
+                    }
+                ]
+            }
+            if self.end: data["choices"][0]["finish_reason"] = "stop"
+            if self.content: data["choices"][0]["delta"] = {"content": self.content}
+            return data
+        else:
+            data = {
+                "id": self.id,
+                "created": self.created,
+                "object": "chat.completion",
+                "model": "gpt-4",
+                "choices": [{
+                    "message": {
+                        "role": 'assistant',
+                        "content": self.content
+                    },
+                    'finish_reason': 'stop',
+                    'index': 0,
+                }]
+            }
+            return data
+
+
 def create_hyperlink(match, urls):
     index = int(match.group(1)) - 1
     return f" [{urlparse(urls[index]).hostname}]({urls[index]})"
 
-def prepare_response(*json_objects):
+
+def prepare_response(id, created, filter=False, content="", end=False, done=False):
+
     response = b""
 
-    for obj in json_objects:
-        if isinstance(obj, str):
-            if obj == "DONE":
-                response += b"data: " + b"[DONE]" + b"\n\n"
-                continue
-
-        response += b"data: " + json.dumps(obj).encode() + b"\n\n"
+    if filter:
+        OAIResponse = OpenaiResponse(id, created, content="Отфильтровано.")
+        response += b"data: " + json.dumps(OAIResponse.dict()).encode() + b"\n\n"
+    if content:
+        OAIResponse = OpenaiResponse(id, created, content=content)
+        response += b"data: " + json.dumps(OAIResponse.dict()).encode() + b"\n\n"
+    if end:
+        OAIResponse = OpenaiResponse(id, created, end=True)
+        response += b"data: " + json.dumps(OAIResponse.dict()).encode() + b"\n\n"
+    if done:
+        response += b"data: " + b"[DONE]" + b"\n\n"
 
     return response
 
@@ -70,23 +127,6 @@ def transform_message(message):
 def process_messages(messages):
     transformed_messages = [transform_message(message) for message in messages]
     return "".join(transformed_messages)+"\n"
-
-
-def response_data(id, created, content):
-    return {
-        "id": id,
-        "created": created,
-        "object": "chat.completion",
-        "model": "gpt-4",
-        "choices": [{
-            "message": {
-                "role": 'assistant',
-                "content": content
-            },
-            'finish_reason': 'stop',
-            'index': 0,
-        }]
-    }
 
 
 class SSEHandler(web.View):
@@ -152,41 +192,11 @@ class SSEHandler(web.View):
             print("Ошибка запуска чатбота.", str(e))
             return
 
-        end_data = {
-            "id": self.id,
-            "object": "chat.completion.chunk",
-            "created": self.created,
-            "model": "gpt-4",
-            "choices": [
-                {
-                    "delta": {},
-                    "index": 0,
-                    "finish_reason": "stop"
-                }
-            ]
-        }
-
-        filtered_data = {
-            "id": self.id,
-            "object": "chat.completion.chunk",
-            "created": self.created,
-            "model": "gpt-4",
-            "choices": [
-                {
-                    "delta": {
-                        "content": "Отфильтровано."
-                    },
-                    "index": 0,
-                    "finish_reason": "null"
-                }
-            ]
-        }
-
         async def output():
             print("\nФормируется запрос...")
 
             link_replacer = LinkReplacer()
-            non_stream_response = ""
+            response_text = ""
             wrote = 0
 
             async for final, response in chatbot.ask_stream(
@@ -220,51 +230,36 @@ class SSEHandler(web.View):
                                 print("\nОтвет от сервера:\n")
                             if message.get("contentOrigin") == "Apology":
                                 if stream and wrote == 0:
-                                    await self.response.write(prepare_response(filtered_data))
+                                    await self.response.write(prepare_response(self.id, self.created, filter=True))
 
                                 if stream:
-                                    await self.response.write(prepare_response(end_data, "DONE"))
+                                    if ASTERISK_FIX and (response_text.count("*") % 2 == 1):
+                                        asterisk = "*"
+                                    else:
+                                        asterisk = ""
+                                    await self.response.write(prepare_response(self.id, self.created, content=asterisk, end=True, done=True))
                                 else:
+                                    if ASTERISK_FIX and len(response_text.split("*")) % 2 == 0:
+                                        response_text += "*"
+                                    OAIResponse = OpenaiResponse(self.id, self.created, content=response_text, stream=False)
                                     await self.response.write(
                                         json.dumps(
-                                            response_data(
-                                                self.id,
-                                                self.created,
-                                                non_stream_response
-                                            )
+                                            OAIResponse.dict()
                                         ).encode()
                                     )
                                 print("\nСообщение отозвано.")
                                 break
                             else:
-                                content = message['text'][wrote:]
-                                content = content.replace('\\"', '"')
+                                streamingContentChunk = message['text'][wrote:]
+                                streamingContentChunk = streamingContentChunk.replace('\\"', '"')
+                                response_text += streamingContentChunk
 
                                 if 'urls' in vars():
                                     if urls:
-                                        content = link_replacer.process(content, urls)
+                                        streamingContentChunk = link_replacer.process(streamingContentChunk, urls)
 
                                 if stream:
-
-                                    data = {
-                                        "id": self.id,
-                                        "object": "chat.completion.chunk",
-                                        "created": self.created,
-                                        "model": "gpt-4",
-                                        "choices": [
-                                            {
-                                                "delta": {
-                                                    "content": content
-                                                },
-                                                "index": 0,
-                                                "finish_reason": "null"
-                                            }
-                                        ]
-                                    }
-
-                                    await self.response.write(prepare_response(data))
-                                else:
-                                    non_stream_response += content
+                                    await self.response.write(prepare_response(self.id, self.created, content=streamingContentChunk))
 
                                 print(message["text"][wrote:], end="")
                                 sys.stdout.flush()
@@ -274,55 +269,48 @@ class SSEHandler(web.View):
                                     suggested_responses = '\n'.join(x["text"] for x in message["suggestedResponses"])
                                     suggested_responses = "\n```" + suggested_responses + "```"
                                     if stream:
-                                        data = {
-                                            "id": self.id,
-                                            "object": "chat.completion.chunk",
-                                            "created": self.created,
-                                            "model": "gpt-4",
-                                            "choices": [
-                                                {
-                                                    "delta": {
-                                                        "content": suggested_responses
-                                                    },
-                                                    "index": 0,
-                                                    "finish_reason": "null"
-                                                }
-                                            ]
-                                        }
                                         if suggestion:
-                                            await self.response.write(prepare_response(data, end_data, "DONE"))
+                                            await self.response.write(prepare_response(self.id, self.created, content=streamingContentChunk, end=True, done=True))
                                         else:
-                                            await self.response.write(prepare_response(end_data, "DONE"))
+                                            await self.response.write(prepare_response(self.id, self.created, end=True, done=True))
                                     else:
                                         if suggestion:
-                                            non_stream_response = non_stream_response + suggested_responses
+                                            response_text = response_text + suggested_responses
+                                        OAIResponse = OpenaiResponse(self.id, self.created, content=response_text, stream=False)
                                         await self.response.write(
                                             json.dumps(
-                                                response_data(
-                                                    self.id,
-                                                    self.created,
-                                                    non_stream_response
-                                                )
+                                                OAIResponse.dict()
                                             ).encode()
                                         )
                                     break
                 if final and not response["item"]["messages"][-1].get("text"):
                     if stream:
-                        await self.response.write(prepare_response(filtered_data, end_data))
+                        await self.response.write(prepare_response(self.id, self.created, filter=True, end=True))
                     print("Сработал фильтр.")
-                    await chatbot.close()
+
+            if response_text:
+                encoding = tiktoken.get_encoding("cl100k_base")
+                print(f"Всего токенов в ответе: \033[1;32m{len(encoding.encode(response_text))}\033[0m")
 
         try:
             await output()
+            await chatbot.close()
+
         except Exception as e:
+            error = f"Ошибка: {str(e)}."
             if str(e) == "'messages'":
-                print("Ошибка:", str(e), "\nПроблема с учеткой. Либо забанили, либо нужно залогиниться.")
+                print(error, "\nПроблема с учеткой. Причины этому: \n"
+                                         "  Бан. Фикс: регистрация по новой. \n"
+                                         "  Куки слетели. Фикс: собрать их снова. \n"
+                                         "  Достигнут лимит сообщений Бинга. Фикс: попробовать разлогиниться и собрать куки, либо собрать их с новой учетки и/или айпи."
+                                         "  Возможно Бинг барахлит и нужно просто сделать реген/свайп."
+                                         "Чтобы узнать подробности можно зайти в сам чат Бинга.")
             elif str(e) == " " or str(e) == "":
-                print("Таймаут.")
+                print(error, "Таймаут.")
             elif str(e) == "received 1000 (OK); then sent 1000 (OK)":
-                print("Слишком много токенов. Больше 14000 токенов не принимает.")
+                print(error, "Слишком много токенов. Больше 14000 токенов не принимает.")
             else:
-                print("Ошибка: ", str(e))
+                print(error)
         return self.response
 
 
