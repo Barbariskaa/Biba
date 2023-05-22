@@ -12,13 +12,16 @@ from urllib.parse import urlparse
 PORT = 8081
 HOST = "127.0.0.1"
 
+CONCATENATE_NSFW_RESPONSES = True
 DESIRED_TOKENS = 500
-ASK_TO_CONTINUE_AS_A_ROLE = 'user' #user/system/assistant
+ASK_TO_CONTINUE_AS_A_ROLE = "user" #user/system/assistant
 CONTINUATION_QUERY = "(continue roleplay from the sentence where you have left)"
 ASTERISK_FIX = True
 
+USER_MESSAGE_WORKAROUND = True
+USER_MESSAGE = "Respond to the text above."
 
-class LinkReplacer:
+class LinkPlaceholderReplacer:
     def __init__(self):
         self.placeholder_wrap = ""
         self.i = 0
@@ -43,7 +46,7 @@ class LinkReplacer:
             self.i = 0
             return self.stash
         elif self.i == 2:
-            result = re.sub(r'\[\^(\d+)\^\]', lambda match: create_hyperlink(match, urls), self.stash)
+            result = re.sub(r'\[\^(\d+)\^\]', lambda match: transform_into_hyperlink(match, urls), self.stash)
             self.i = 0
             self.stash = ""
             return result
@@ -93,26 +96,29 @@ class OpenaiResponse:
             return data
 
 
-def create_hyperlink(match, urls):
+def transform_into_hyperlink(match, urls):
     index = int(match.group(1)) - 1
     return f" [{urlparse(urls[index]).hostname}]({urls[index]})"
 
 
-def prepare_response(id, created, filter=False, content="", end=False, done=False):
+def prepare_response(id, created, filter=False, content="", end=False, done=False, stream=True):
 
     response = b""
 
-    if filter:
-        OAIResponse = OpenaiResponse(id, created, content="Отфильтровано.")
-        response += b"data: " + json.dumps(OAIResponse.dict()).encode() + b"\n\n"
-    if content:
-        OAIResponse = OpenaiResponse(id, created, content=content)
-        response += b"data: " + json.dumps(OAIResponse.dict()).encode() + b"\n\n"
-    if end:
-        OAIResponse = OpenaiResponse(id, created, end=True)
-        response += b"data: " + json.dumps(OAIResponse.dict()).encode() + b"\n\n"
-    if done:
-        response += b"data: " + b"[DONE]" + b"\n\n"
+    if stream:
+        if filter:
+            OAIResponse = OpenaiResponse(id, created, content="Отфильтровано.", stream=stream)
+            response += b"data: " + json.dumps(OAIResponse.dict()).encode() + b"\n\n"
+        if content:
+            OAIResponse = OpenaiResponse(id, created, content=content, stream=stream)
+            response += b"data: " + json.dumps(OAIResponse.dict()).encode() + b"\n\n"
+        if end:
+            OAIResponse = OpenaiResponse(id, created, end=True, stream=stream)
+            response += b"data: " + json.dumps(OAIResponse.dict()).encode() + b"\n\n"
+        if done:
+            response += b"data: " + b"[DONE]" + b"\n\n"
+    else:
+        response = json.dumps(OpenaiResponse(id, created, content=content, stream=stream).dict()).encode()
 
     return response
 
@@ -131,8 +137,6 @@ def process_messages(messages):
 
 class SSEHandler(web.View):
 
-    id = "chatcmpl-" + ''.join(random.choices(string.ascii_letters + string.digits, k=29))
-    created = str(int(time.time()))
 
     async def get(self):
         data = {
@@ -141,7 +145,7 @@ class SSEHandler(web.View):
                        {
                         "id": "gpt-4",
                         "object": "model",
-                        "created": self.created,
+                        "created": str(int(time.time())),
                         "owned_by": "OpenAI",
                         "permissions": [],
                         "root": 'gpt-4',
@@ -153,11 +157,17 @@ class SSEHandler(web.View):
         return web.json_response(data)
 
     async def post(self):
+        id = "chatcmpl-" + ''.join(random.choices(string.ascii_letters + string.digits, k=29))
+        created = str(int(time.time()))
         request_data = await self.request.json()
 
         messages = request_data.get('messages', [])
-        prompt = messages[-1]['content']
-        context = process_messages(messages[:-1])
+        if USER_MESSAGE_WORKAROUND:
+            prompt = USER_MESSAGE
+            context = process_messages(messages)
+        else:
+            prompt = messages[-1]['content']
+            context = process_messages(messages[:-1])
         stream = request_data.get('stream', [])
         if stream:
             self.response = web.StreamResponse(
@@ -195,7 +205,7 @@ class SSEHandler(web.View):
         async def output():
             print("\nФормируется запрос...")
 
-            link_replacer = LinkReplacer()
+            link_placeholder_replacer = LinkPlaceholderReplacer()
             response_text = ""
             wrote = 0
 
@@ -230,36 +240,32 @@ class SSEHandler(web.View):
                                 print("\nОтвет от сервера:\n")
                             if message.get("contentOrigin") == "Apology":
                                 if stream and wrote == 0:
-                                    await self.response.write(prepare_response(self.id, self.created, filter=True))
+                                    await self.response.write(prepare_response(id, created, filter=True))
 
                                 if stream:
                                     if ASTERISK_FIX and (response_text.count("*") % 2 == 1):
                                         asterisk = "*"
                                     else:
                                         asterisk = ""
-                                    await self.response.write(prepare_response(self.id, self.created, content=asterisk, end=True, done=True))
+                                    await self.response.write(prepare_response(id, created, content=asterisk, end=True, done=True))
                                 else:
                                     if ASTERISK_FIX and len(response_text.split("*")) % 2 == 0:
                                         response_text += "*"
-                                    OAIResponse = OpenaiResponse(self.id, self.created, content=response_text, stream=False)
-                                    await self.response.write(
-                                        json.dumps(
-                                            OAIResponse.dict()
-                                        ).encode()
-                                    )
+                                    oai_response = prepare_response(id, created, content=response_text, stream=False)
+                                    await self.response.write(oai_response)
                                 print("\nСообщение отозвано.")
                                 break
                             else:
-                                streamingContentChunk = message['text'][wrote:]
-                                streamingContentChunk = streamingContentChunk.replace('\\"', '"')
-                                response_text += streamingContentChunk
+                                streaming_content_chunk = message['text'][wrote:]
+                                streaming_content_chunk = streaming_content_chunk.replace('\\"', '\"')
+                                response_text += streaming_content_chunk
 
                                 if 'urls' in vars():
                                     if urls:
-                                        streamingContentChunk = link_replacer.process(streamingContentChunk, urls)
+                                        streaming_content_chunk = link_placeholder_replacer.process(streaming_content_chunk, urls)
 
                                 if stream:
-                                    await self.response.write(prepare_response(self.id, self.created, content=streamingContentChunk))
+                                    await self.response.write(prepare_response(id, created, content=streaming_content_chunk))
 
                                 print(message["text"][wrote:], end="")
                                 sys.stdout.flush()
@@ -270,47 +276,57 @@ class SSEHandler(web.View):
                                     suggested_responses = "\n```" + suggested_responses + "```"
                                     if stream:
                                         if suggestion:
-                                            await self.response.write(prepare_response(self.id, self.created, content=streamingContentChunk, end=True, done=True))
+                                            await self.response.write(prepare_response(id, created, content=streaming_content_chunk, end=True, done=True))
                                         else:
-                                            await self.response.write(prepare_response(self.id, self.created, end=True, done=True))
+                                            await self.response.write(prepare_response(id, created, end=True, done=True))
                                     else:
                                         if suggestion:
                                             response_text = response_text + suggested_responses
-                                        OAIResponse = OpenaiResponse(self.id, self.created, content=response_text, stream=False)
-                                        await self.response.write(
-                                            json.dumps(
-                                                OAIResponse.dict()
-                                            ).encode()
-                                        )
+                                        oai_response = prepare_response(id, created, content=response_text, stream=False)
+                                        await self.response.write(oai_response)
                                     break
                 if final and not response["item"]["messages"][-1].get("text"):
                     if stream:
-                        await self.response.write(prepare_response(self.id, self.created, filter=True, end=True))
+                        await self.response.write(prepare_response(id, created, filter=True, end=True))
                     print("Сработал фильтр.")
 
             if response_text:
                 encoding = tiktoken.get_encoding("cl100k_base")
-                print(f"Всего токенов в ответе: \033[1;32m{len(encoding.encode(response_text))}\033[0m")
+                tokens = len(encoding.encode(response_text))
+                print(f"\nВсего токенов в ответе: \033[1;32m{tokens}\033[0m")
 
         try:
             await output()
             await chatbot.close()
-
         except Exception as e:
             error = f"Ошибка: {str(e)}."
+            error_text = ""
             if str(e) == "'messages'":
-                print(error, "\nПроблема с учеткой. Причины этому: \n"
-                                         "  Бан. Фикс: регистрация по новой. \n"
-                                         "  Куки слетели. Фикс: собрать их снова. \n"
-                                         "  Достигнут лимит сообщений Бинга. Фикс: попробовать разлогиниться и собрать куки, либо собрать их с новой учетки и/или айпи."
-                                         "  Возможно Бинг барахлит и нужно просто сделать реген/свайп."
-                                         "Чтобы узнать подробности можно зайти в сам чат Бинга.")
+                error_text = "\nПроблема с учеткой. Возможные причины: \n```\n " \
+                             "  Бан. Фикс: регистрация по новой. \n " \
+                             "  Куки слетели. Фикс: собрать их снова. \n " \
+                             "  Достигнут лимит сообщений Бинга. Фикс: попробовать разлогиниться и собрать куки, либо собрать их с новой учетки и/или айпи. \n " \
+                             "  Возможно Бинг барахлит/троттлит запросы и нужно просто сделать реген/свайп. \n```\n " \
+                             "Чтобы узнать подробности можно зайти в сам чат Бинга и отправить сообщение."
+                print(error, error_text)
             elif str(e) == " " or str(e) == "":
-                print(error, "Таймаут.")
+                error_text = "Таймаут."
+                print(error, error_text)
             elif str(e) == "received 1000 (OK); then sent 1000 (OK)":
-                print(error, "Слишком много токенов. Больше 14000 токенов не принимает.")
+                error_text = "Слишком много токенов. Больше 14000 токенов не принимает."
+                print(error, error_text)
+            elif str(e) == "'contentOrigin'":
+                error_text = "Ошибка связанная с размером промпта. \n " \
+                             "Возможно последнее сообщение в отправленном промпте (джейл или сообщение пользователя/ассистента) " \
+                             "на сервер слишком большое. \n"
+                print(error, error_text)
             else:
                 print(error)
+            if stream:
+                oai_response = prepare_response(id, created, content=error + error_text, end=True, done=True, stream=True)
+            else:
+                oai_response = prepare_response(id, created, content=error + error_text, stream=False)
+            await self.response.write(oai_response)
         return self.response
 
 
