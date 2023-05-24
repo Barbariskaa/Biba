@@ -258,11 +258,13 @@ class SSEHandler(web.View):
                             else:
                                 streaming_content_chunk = message['text'][wrote:]
                                 streaming_content_chunk = streaming_content_chunk.replace('\\"', '\"')
-                                response_text += streaming_content_chunk
+
 
                                 if 'urls' in vars():
                                     if urls:
                                         streaming_content_chunk = link_placeholder_replacer.process(streaming_content_chunk, urls)
+
+                                response_text += streaming_content_chunk
 
                                 if stream:
                                     await self.response.write(prepare_response(id, created, content=streaming_content_chunk))
