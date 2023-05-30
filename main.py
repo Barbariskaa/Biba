@@ -261,8 +261,6 @@ class SSEHandler(web.View):
                             if message.get("contentOrigin") == "Apology":
                                 if stream and wrote == 0:
                                     await streamCallback(self, "Отфильтровано.")
-                                    if nsfwMode:
-                                        self.responseWasFilteredInLoop = True
                                     break
 
                                 if MARKUP_FIX:
