@@ -12,11 +12,11 @@ from urllib.parse import urlparse
 PORT = 8081
 HOST = "127.0.0.1"
 
-CONCATENATE_NSFW_RESPONSES = True
-DESIRED_TOKENS = 500
-ASK_TO_CONTINUE_AS_A_ROLE = "user" #user/system/assistant
+CONCATENATE_RESPONSES = True
+CONCATENATE_RESPONSES_STRING = "\n\n"
+DESIRED_TOKENS = 200
 CONTINUATION_QUERY = "(continue roleplay from the sentence where you have left)"
-ASTERISK_FIX = True
+MARKUP_FIX = True
 
 USER_MESSAGE_WORKAROUND = True
 USER_MESSAGE = "Respond to the text above."
@@ -44,12 +44,16 @@ class LinkPlaceholderReplacer:
             return ""
         elif self.i == 1 and not re.search(self.regex, self.stash):
             self.i = 0
-            return self.stash
+            result = self.stash
+            self.stash = ""
+            return result
         elif self.i == 2:
             result = re.sub(r'\[\^(\d+)\^\]', lambda match: transform_into_hyperlink(match, urls), self.stash)
             self.i = 0
             self.stash = ""
             return result
+        
+        self.stash = ""
 
 
 class OpenaiResponse:
@@ -157,8 +161,31 @@ class SSEHandler(web.View):
         return web.json_response(data)
 
     async def post(self):
-        id = "chatcmpl-" + ''.join(random.choices(string.ascii_letters + string.digits, k=29))
-        created = str(int(time.time()))
+
+        self.id = "chatcmpl-" + ''.join(random.choices(string.ascii_letters + string.digits, k=29))
+        self.created = str(int(time.time()))
+        self.responseWasFiltered = False
+        self.responseWasFilteredInLoop = False
+        self.response_text = ""
+        self.full_response = ""
+
+        async def streamCallback(self, data):
+            self.full_response += data
+            if stream:
+                await self.response.write(b"data: " + json.dumps({
+                    "id": self.id,
+                    "object": "chat.completion.chunk",
+                    "created": self.created,
+                    "model": "gpt-4",
+                    "choices": [
+                        {
+                            "delta": { "content": data },
+                            "index": 0,
+                            "finish_reason": "null"
+                        }
+                    ]
+                }).encode() + b"\n\n")
+
         request_data = await self.request.json()
 
         messages = request_data.get('messages', [])
@@ -169,22 +196,14 @@ class SSEHandler(web.View):
             prompt = messages[-1]['content']
             context = process_messages(messages[:-1])
         stream = request_data.get('stream', [])
-        if stream:
-            self.response = web.StreamResponse(
-                status=200,
-                headers={
-                    'Content-Type': 'application/json',
-                }
-            )
-            await self.response.prepare(self.request)
-        else:
-            self.response = web.StreamResponse(
-                status=200,
-                headers={
-                    'Content-Type': 'application/json',
-                }
-            )
-            await self.response.prepare(self.request)
+        self.response = web.StreamResponse(
+            status=200,
+            headers={
+                'Content-Type': 'application/json',
+            }
+        )
+        await self.response.prepare(self.request)
+
 
         conversation_style = self.request.path.split('/')[1]
         if conversation_style not in ["creative", "balanced", "precise"]:
@@ -193,20 +212,21 @@ class SSEHandler(web.View):
         suggestion = self.request.path.split('/')[2]
         if suggestion != "suggestion":
             suggestion = None
-        try:
-            chatbot = await Chatbot.create(cookie_path="cookies.json")
-        except Exception as e:
-            if str(e) == "[Errno 11001] getaddrinfo failed":
-                print("Нет интернет соединения.")
+
+        async def output(self, streamCallback, nsfwMode=False):
+            self.response_text = ""
+
+            try:
+                chatbot = await Chatbot.create(cookie_path="cookies.json")
+            except Exception as e:
+                if str(e) == "[Errno 11001] getaddrinfo failed":
+                    print("Нет интернет-соединения.")
+                    return
+                print("Ошибка запуска чатбота.", str(e))
                 return
-            print("Ошибка запуска чатбота.", str(e))
-            return
-
-        async def output():
+            
             print("\nФормируется запрос...")
-
             link_placeholder_replacer = LinkPlaceholderReplacer()
-            response_text = ""
             wrote = 0
 
             async for final, response in chatbot.ask_stream(
@@ -240,20 +260,22 @@ class SSEHandler(web.View):
                                 print("\nОтвет от сервера:\n")
                             if message.get("contentOrigin") == "Apology":
                                 if stream and wrote == 0:
-                                    await self.response.write(prepare_response(id, created, filter=True))
+                                    await streamCallback(self, "Отфильтровано.")
+                                    if nsfwMode:
+                                        self.responseWasFilteredInLoop = True
+                                    break
 
-                                if stream:
-                                    if ASTERISK_FIX and (response_text.count("*") % 2 == 1):
-                                        asterisk = "*"
-                                    else:
-                                        asterisk = ""
-                                    await self.response.write(prepare_response(id, created, content=asterisk, end=True, done=True))
-                                else:
-                                    if ASTERISK_FIX and len(response_text.split("*")) % 2 == 0:
-                                        response_text += "*"
-                                    oai_response = prepare_response(id, created, content=response_text, stream=False)
-                                    await self.response.write(oai_response)
-                                print("\nСообщение отозвано.")
+                                if MARKUP_FIX:
+                                    if self.response_text.count("*") % 2 == 1 or self.response_text.count("*") == 1:
+                                        await streamCallback(self, "*")
+                                        self.response_text += "*"
+                                    if self.response_text.count("\"") % 2 == 1 or self.response_text.count("\"") == 1:
+                                        await streamCallback(self, "\"")
+                                        self.response_text += "\""
+
+                                self.responseWasFiltered = True
+
+                                print("\nОтвет отозван во время стрима.")
                                 break
                             else:
                                 streaming_content_chunk = message['text'][wrote:]
@@ -264,10 +286,9 @@ class SSEHandler(web.View):
                                     if urls:
                                         streaming_content_chunk = link_placeholder_replacer.process(streaming_content_chunk, urls)
 
-                                response_text += streaming_content_chunk
+                                self.response_text += streaming_content_chunk
 
-                                if stream:
-                                    await self.response.write(prepare_response(id, created, content=streaming_content_chunk))
+                                await streamCallback(self, streaming_content_chunk)
 
                                 print(message["text"][wrote:], end="")
                                 sys.stdout.flush()
@@ -276,30 +297,97 @@ class SSEHandler(web.View):
                                 if "suggestedResponses" in message:
                                     suggested_responses = '\n'.join(x["text"] for x in message["suggestedResponses"])
                                     suggested_responses = "\n```" + suggested_responses + "```"
-                                    if stream:
-                                        if suggestion:
-                                            await self.response.write(prepare_response(id, created, content=streaming_content_chunk, end=True, done=True))
-                                        else:
-                                            await self.response.write(prepare_response(id, created, end=True, done=True))
-                                    else:
-                                        if suggestion:
-                                            response_text = response_text + suggested_responses
-                                        oai_response = prepare_response(id, created, content=response_text, stream=False)
-                                        await self.response.write(oai_response)
+                                    if suggestion and not nsfwMode:
+                                        await streamCallback(self, suggested_responses)
                                     break
                 if final and not response["item"]["messages"][-1].get("text"):
-                    if stream:
-                        await self.response.write(prepare_response(id, created, filter=True, end=True))
                     print("Сработал фильтр.")
+                    if nsfwMode:
+                        print("Выходим из цикла.\n")
+                        self.responseWasFilteredInLoop = True
 
-            if response_text:
-                encoding = tiktoken.get_encoding("cl100k_base")
-                tokens = len(encoding.encode(response_text))
-                print(f"\nВсего токенов в ответе: \033[1;32m{tokens}\033[0m")
-
-        try:
-            await output()
             await chatbot.close()
+
+            
+            
+        try:
+            if stream:
+                await self.response.write(b"data: " + json.dumps({
+                    "id": self.id,
+                    "object": "chat.completion.chunk",
+                    "created": self.created,
+                    "model": "gpt-4",
+                    "choices": [
+                        {
+                            "delta": { "role": 'assistant' },
+                            "index": 0,
+                            "finish_reason": "null"
+                        }
+                    ]
+                }).encode() + b"\n\n")
+            await output(self, streamCallback)
+            encoding = tiktoken.get_encoding("cl100k_base")
+            if self.responseWasFiltered and CONCATENATE_RESPONSES:
+                tokens_total = len(encoding.encode(self.full_response))
+                if USER_MESSAGE_WORKAROUND:
+                    prompt = CONTINUATION_QUERY
+                    context += f"[assistant](#message)\n{self.response_text}\n"
+                else:
+                    context+=f"[{messages[-1]['role']}](#message)\n{prompt}\n\n[assistant](#message)\n{self.response_text}\n"
+                    prompt=CONTINUATION_QUERY
+                self.full_response += CONCATENATE_RESPONSES_STRING
+                print("Токенов в ответе:",tokens_total)
+                while tokens_total < DESIRED_TOKENS and not self.responseWasFilteredInLoop:
+                    if stream:
+                        await self.response.write(b"data: " + json.dumps({
+                            "id": self.id,
+                            "object": "chat.completion.chunk",
+                            "created": self.created,
+                            "model": "gpt-4",
+                            "choices": [
+                                {
+                                    "delta": { "content": CONCATENATE_RESPONSES_STRING },
+                                    "index": 0,
+                                    "finish_reason": "null"
+                                }
+                            ]
+                        }).encode() + b"\n\n")
+                    await output(self, streamCallback, nsfwMode=True)
+                    context+=self.response_text + CONCATENATE_RESPONSES_STRING
+                    self.full_response += CONCATENATE_RESPONSES_STRING
+                    tokens_response = len(encoding.encode(self.response_text))
+                    tokens_total = len(encoding.encode(self.full_response))
+                    print(f"Токенов в ответе: {tokens_response}")
+                    print(f"Токенов всего: {tokens_total}")
+
+            if stream:
+                await self.response.write(b"data: " + json.dumps({
+                        "id": self.id, 
+                        "created": self.created,
+                        "object": 'chat.completion.chunk',
+                        "model": "gpt-4",
+                        "choices": [{
+                            "delta": {},
+                            "finish_reason": 'stop',
+                            "index": 0,
+                        }],
+                    }).encode() + b"\n\n")
+            else:
+                await self.response.write(json.dumps({
+                        "id": self.id,
+                        "created": self.created,
+                        "object": "chat.completion",
+                        "model": "gpt-4",
+                        "choices": [{
+                            "message": {
+                                "role": 'assistant',
+                                "content": self.full_response
+                            },
+                            'finish_reason': 'stop',
+                            'index': 0,
+                        }]
+                    }).encode())
+            return self.response
         except Exception as e:
             error = f"Ошибка: {str(e)}."
             error_text = ""
@@ -324,12 +412,19 @@ class SSEHandler(web.View):
                 print(error, error_text)
             else:
                 print(error)
-            if stream:
-                oai_response = prepare_response(id, created, content=error + error_text, end=True, done=True, stream=True)
+            if not self.full_response:
+                if stream:
+                    oai_response = prepare_response(self.id, self.created, content=error + error_text, end=True, done=True, stream=True)
+                else:
+                    oai_response = prepare_response(self.id, self.created, content=error + error_text, stream=False)
             else:
-                oai_response = prepare_response(id, created, content=error + error_text, stream=False)
+                if stream:
+                    oai_response = prepare_response(self.id, self.created, end=True, done=True, stream=True)
+                else:
+                    oai_response = prepare_response(self.id, self.created, content=self.full_response, stream=False)
             await self.response.write(oai_response)
-        return self.response
+        return self.response        
+
 
 
 app = web.Application()
