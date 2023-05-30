@@ -16,10 +16,18 @@ CONCATENATE_RESPONSES = True
 CONCATENATE_RESPONSES_STRING = "\n\n"
 DESIRED_TOKENS = 200
 CONTINUATION_QUERY = "(continue roleplay from the sentence where you have left)"
+
 MARKUP_FIX = True
+
+COOKIE_NAME = "cookies.json"
 
 USER_MESSAGE_WORKAROUND = True
 USER_MESSAGE = "Respond to the text above."
+
+try:
+    cookies = json.loads(open(f"./{COOKIE_NAME}", encoding="utf-8").read())
+except:
+    cookies = None
 
 class LinkPlaceholderReplacer:
     def __init__(self):
@@ -166,11 +174,12 @@ class SSEHandler(web.View):
         self.created = str(int(time.time()))
         self.responseWasFiltered = False
         self.responseWasFilteredInLoop = False
-        self.response_text = ""
-        self.full_response = ""
+        self.responseText = ""
+        self.fullResponse = ""
+        self.timesFilterEncountered = 0
 
         async def streamCallback(self, data):
-            self.full_response += data
+            self.fullResponse += data
             if stream:
                 await self.response.write(b"data: " + json.dumps({
                     "id": self.id,
@@ -214,10 +223,10 @@ class SSEHandler(web.View):
             suggestion = None
 
         async def output(self, streamCallback, nsfwMode=False):
-            self.response_text = ""
+            self.responseText = ""
 
             try:
-                chatbot = await Chatbot.create(cookie_path="cookies.json")
+                chatbot = await Chatbot.create(cookies=cookies)
             except Exception as e:
                 if str(e) == "[Errno 11001] getaddrinfo failed":
                     print("Нет интернет-соединения.")
@@ -261,15 +270,17 @@ class SSEHandler(web.View):
                             if message.get("contentOrigin") == "Apology":
                                 if stream and wrote == 0:
                                     await streamCallback(self, "Отфильтровано.")
+                                    if nsfwMode:
+                                        self.responseWasFilteredInLoop = True
                                     break
 
                                 if MARKUP_FIX:
-                                    if self.response_text.count("*") % 2 == 1 or self.response_text.count("*") == 1:
+                                    if self.responseText.count("*") % 2 == 1 or self.responseText.count("*") == 1:
                                         await streamCallback(self, "*")
-                                        self.response_text += "*"
-                                    if self.response_text.count("\"") % 2 == 1 or self.response_text.count("\"") == 1:
+                                        self.responseText += "*"
+                                    if self.responseText.count("\"") % 2 == 1 or self.responseText.count("\"") == 1:
                                         await streamCallback(self, "\"")
-                                        self.response_text += "\""
+                                        self.responseText += "\""
 
                                 self.responseWasFiltered = True
 
@@ -284,7 +295,7 @@ class SSEHandler(web.View):
                                     if urls:
                                         streaming_content_chunk = link_placeholder_replacer.process(streaming_content_chunk, urls)
 
-                                self.response_text += streaming_content_chunk
+                                self.responseText += streaming_content_chunk
 
                                 await streamCallback(self, streaming_content_chunk)
 
@@ -326,14 +337,14 @@ class SSEHandler(web.View):
             await output(self, streamCallback)
             encoding = tiktoken.get_encoding("cl100k_base")
             if self.responseWasFiltered and CONCATENATE_RESPONSES:
-                tokens_total = len(encoding.encode(self.full_response))
+                tokens_total = len(encoding.encode(self.fullResponse))
                 if USER_MESSAGE_WORKAROUND:
                     prompt = CONTINUATION_QUERY
-                    context += f"[assistant](#message)\n{self.response_text}\n"
+                    context += f"[assistant](#message)\n{self.responseText}\n"
                 else:
-                    context+=f"[{messages[-1]['role']}](#message)\n{prompt}\n\n[assistant](#message)\n{self.response_text}\n"
+                    context+=f"[{messages[-1]['role']}](#message)\n{prompt}\n\n[assistant](#message)\n{self.responseText}\n"
                     prompt=CONTINUATION_QUERY
-                self.full_response += CONCATENATE_RESPONSES_STRING
+                self.fullResponse += CONCATENATE_RESPONSES_STRING
                 print("Токенов в ответе:",tokens_total)
                 while tokens_total < DESIRED_TOKENS and not self.responseWasFilteredInLoop:
                     if stream:
@@ -351,11 +362,11 @@ class SSEHandler(web.View):
                             ]
                         }).encode() + b"\n\n")
                     await output(self, streamCallback, nsfwMode=True)
-                    context+=self.response_text + CONCATENATE_RESPONSES_STRING
-                    self.full_response += CONCATENATE_RESPONSES_STRING
-                    tokens_response = len(encoding.encode(self.response_text))
-                    tokens_total = len(encoding.encode(self.full_response))
-                    print(f"Токенов в ответе: {tokens_response}")
+                    context+=self.responseText + CONCATENATE_RESPONSES_STRING
+                    self.fullResponse += CONCATENATE_RESPONSES_STRING
+                    tokens_response = len(encoding.encode(self.responseText))
+                    tokens_total = len(encoding.encode(self.fullResponse))
+                    print(f"\nТокенов в ответе: {tokens_response}")
                     print(f"Токенов всего: {tokens_total}")
 
             if stream:
@@ -379,7 +390,7 @@ class SSEHandler(web.View):
                         "choices": [{
                             "message": {
                                 "role": 'assistant',
-                                "content": self.full_response
+                                "content": self.fullResponse
                             },
                             'finish_reason': 'stop',
                             'index': 0,
@@ -410,7 +421,7 @@ class SSEHandler(web.View):
                 print(error, error_text)
             else:
                 print(error)
-            if not self.full_response:
+            if not self.fullResponse:
                 if stream:
                     oai_response = prepare_response(self.id, self.created, content=error + error_text, end=True, done=True, stream=True)
                 else:
@@ -419,7 +430,7 @@ class SSEHandler(web.View):
                 if stream:
                     oai_response = prepare_response(self.id, self.created, end=True, done=True, stream=True)
                 else:
-                    oai_response = prepare_response(self.id, self.created, content=self.full_response, stream=False)
+                    oai_response = prepare_response(self.id, self.created, content=self.fullResponse, stream=False)
             await self.response.write(oai_response)
         return self.response        
 
