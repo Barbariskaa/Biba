@@ -4,7 +4,7 @@ anyio==3.6.2
 attrs==23.1.0
 BingImageCreator==0.1.5
 certifi==2022.12.7
-EdgeGPT==0.3.5
+EdgeGPT==0.6.10
 frozenlist==1.3.3
 h11==0.14.0
 httpcore==0.17.0
