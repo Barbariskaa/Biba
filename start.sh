@@ -1,5 +1,5 @@
-@echo off
+#!/bin/bash
 python -m venv venv
-call venv\Scripts\activate
+source venv/bin/activate
 pip install -r requirements.txt
 python main.py
