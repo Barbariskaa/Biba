@@ -411,7 +411,7 @@ class SSEHandler(web.View):
             elif str(e) == " " or str(e) == "":
                 error_text = "Таймаут."
                 print(error, error_text)
-            elif str(e) == "received 1000 (OK); then sent 1000 (OK)" or str(e) == "'int' object has no attribute 'split'"::
+            elif str(e) == "received 1000 (OK); then sent 1000 (OK)" or str(e) == "'int' object has no attribute 'split'":
                 error_text = "Слишком много токенов. Больше 14000 токенов не принимает."
                 print(error, error_text)
             elif str(e) == "'contentOrigin'":
