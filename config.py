@@ -1,10 +1,10 @@
 PORT = 8081
 HOST = "127.0.0.1"
-CONCATENATE_RESPONSES = True
-CONCATENATE_RESPONSES_STRING = "\n\n"
+CONCATENATE_RESPONSES = True #Соединять ли отозванные ответы от сервера?
+CONCATENATE_RESPONSES_STRING = "\n\n" #Как отозванные сообщения соединяются.
 DESIRED_TOKENS = 200
-CONTINUATION_QUERY = "(continue roleplay from the sentence where you have left, don't forget to use character names)"
-MARKUP_FIX = True
+CONTINUATION_QUERY = "(continue roleplay from the sentence where you have left, don't forget to use character names)" #Сообщение побуждающее бота продолжить отозванное сообщение.
+MARKUP_FIX = True #Фикс потерянных кавычек и звездочек при отзыве сообщения.
 COOKIE_NAME = "cookies.json"
-USER_MESSAGE_WORKAROUND = True
-USER_MESSAGE = "Respond to the text above."
+USER_MESSAGE_WORKAROUND = True #Отправка в чат сообщения ниже. Код работает по такому принципу: есть контекст (история чата), а есть сообщение юзера. Если True, то сообщением отправляется заглушка ниже, если False, то отправляется последнее сообщение в таверне - джейл/ответ бота/ответ пользователя.
+USER_MESSAGE = "Respond to the text above." #Заглушка
