@@ -7,6 +7,7 @@ import json
 import re
 import sys
 import tiktoken
+import config
 from urllib.parse import urlparse
 
 PORT = config.PORT
