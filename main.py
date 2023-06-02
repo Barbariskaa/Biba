@@ -9,20 +9,20 @@ import sys
 import tiktoken
 from urllib.parse import urlparse
 
-PORT = 8081
-HOST = "127.0.0.1"
+PORT = config.PORT
+HOST = config.HOST
 
-CONCATENATE_RESPONSES = True
-CONCATENATE_RESPONSES_STRING = "\n\n"
-DESIRED_TOKENS = 200
-CONTINUATION_QUERY = "(continue roleplay from the sentence where you have left)"
+CONCATENATE_RESPONSES = config.CONCATENATE_RESPONSES
+CONCATENATE_RESPONSES_STRING = config.CONCATENATE_RESPONSES_STRING
+DESIRED_TOKENS = config.DESIRED_TOKENS
+CONTINUATION_QUERY = config.CONTINUATION_QUERY
 
-MARKUP_FIX = True
+MARKUP_FIX = config.MARKUP_FIX
 
-COOKIE_NAME = "cookies.json"
+COOKIE_NAME = config.COOKIE_NAME
 
-USER_MESSAGE_WORKAROUND = True
-USER_MESSAGE = "Respond to the text above."
+USER_MESSAGE_WORKAROUND = config.USER_MESSAGE_WORKAROUND
+USER_MESSAGE = config.USER_MESSAGE
 
 try:
     cookies = json.loads(open(f"./{COOKIE_NAME}", encoding="utf-8").read())
