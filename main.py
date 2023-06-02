@@ -398,10 +398,7 @@ class SSEHandler(web.View):
                         url = f"{REDIRECT_PROXY}v1/chat/completions"
                     else:
                         url = f"{REDIRECT_PROXY}/v1/chat/completions"
-                    print(url)
-                    # Use await to wait for the response
                     async with session.post(url, headers=headers, json=body) as response:
-                        # Use async for to iterate over the response chunks
                         async for chunk in response.content.iter_chunked(1024):
                             await self.response.write(chunk)
             else:
