@@ -8,6 +8,8 @@ import re
 import sys
 import tiktoken
 import config
+import requests
+import aiohttp
 from urllib.parse import urlparse
 
 PORT = config.PORT
@@ -24,6 +26,11 @@ COOKIE_NAME = config.COOKIE_NAME
 
 USER_MESSAGE_WORKAROUND = config.USER_MESSAGE_WORKAROUND
 USER_MESSAGE = config.USER_MESSAGE
+
+REDIRECT_PROXY = config.REDIRECT_PROXY
+REDIRECT_API_KEY = config.REDIRECT_API_KEY
+REDIRECT_API_MODEL = config.REDIRECT_API_MODEL
+REDIRECT_COMMAND = config.REDIRECT_COMMAND
 
 try:
     cookies = json.loads(open(f"./{COOKIE_NAME}", encoding="utf-8").read())
@@ -175,13 +182,11 @@ class SSEHandler(web.View):
         self.created = str(int(time.time()))
         self.responseWasFiltered = False
         self.responseWasFilteredInLoop = False
-        self.responseText = ""
         self.fullResponse = ""
-        self.timesFilterEncountered = 0
 
         async def streamCallback(self, data):
             self.fullResponse += data
-            if stream:
+            if stream and not redirect:
                 await self.response.write(b"data: " + json.dumps({
                     "id": self.id,
                     "object": "chat.completion.chunk",
@@ -219,9 +224,18 @@ class SSEHandler(web.View):
         if conversation_style not in ["creative", "balanced", "precise"]:
             conversation_style = "creative"
 
-        suggestion = self.request.path.split('/')[2]
-        if suggestion != "suggestion":
-            suggestion = None
+        if self.request.path.split('/')[1] == "suggestion":
+            redirect = True
+
+        if self.request.path.split('/')[2] == "suggestion":
+            suggestion = True
+        else:
+            suggestion = False
+
+        if self.request.path.split('/')[2] == "redirect":
+            redirect = True
+        else:
+            redirect = False
 
         async def output(self, streamCallback, nsfwMode=False):
             self.responseText = ""
@@ -321,7 +335,7 @@ class SSEHandler(web.View):
             
             
         try:
-            if stream:
+            if stream and not redirect:
                 await self.response.write(b"data: " + json.dumps({
                     "id": self.id,
                     "object": "chat.completion.chunk",
@@ -348,7 +362,7 @@ class SSEHandler(web.View):
                 self.fullResponse += CONCATENATE_RESPONSES_STRING
                 print("Токенов в ответе:",tokens_total)
                 while tokens_total < DESIRED_TOKENS and not self.responseWasFilteredInLoop:
-                    if stream:
+                    if stream and not redirect:
                         await self.response.write(b"data: " + json.dumps({
                             "id": self.id,
                             "object": "chat.completion.chunk",
@@ -369,34 +383,48 @@ class SSEHandler(web.View):
                     tokens_total = len(encoding.encode(self.fullResponse))
                     print(f"\nТокенов в ответе: {tokens_response}")
                     print(f"Токенов всего: {tokens_total}")
-
-            if stream:
-                await self.response.write(b"data: " + json.dumps({
-                        "id": self.id, 
-                        "created": self.created,
-                        "object": 'chat.completion.chunk',
-                        "model": "gpt-4",
-                        "choices": [{
-                            "delta": {},
-                            "finish_reason": 'stop',
-                            "index": 0,
-                        }],
-                    }).encode() + b"\n\n")
+            if redirect:
+                async with aiohttp.ClientSession() as session:
+                    headers = {"Content-Type": "application/json","Authorization": f"Bearer {REDIRECT_API_KEY}"}
+                    body = {
+                        "model": REDIRECT_API_MODEL,
+                        "messages": [{"role": "user", "content": f"{self.fullResponse}\n\n{REDIRECT_COMMAND}"}],
+                        "temperature": 0.7,
+                        "stream": stream
+                    }
+                    # Use await to wait for the response
+                    async with session.post(REDIRECT_PROXY, headers=headers, json=body) as response:
+                        # Use async for to iterate over the response chunks
+                        async for chunk in response.content.iter_chunked(1024):
+                            await self.response.write(chunk)
             else:
-                await self.response.write(json.dumps({
-                        "id": self.id,
-                        "created": self.created,
-                        "object": "chat.completion",
-                        "model": "gpt-4",
-                        "choices": [{
-                            "message": {
-                                "role": 'assistant',
-                                "content": self.fullResponse
-                            },
-                            'finish_reason': 'stop',
-                            'index': 0,
-                        }]
-                    }).encode())
+                if stream:
+                    await self.response.write(b"data: " + json.dumps({
+                            "id": self.id, 
+                            "created": self.created,
+                            "object": 'chat.completion.chunk',
+                            "model": "gpt-4",
+                            "choices": [{
+                                "delta": {},
+                                "finish_reason": 'stop',
+                                "index": 0,
+                            }],
+                        }).encode() + b"\n\n")
+                else:
+                    await self.response.write(json.dumps({
+                            "id": self.id,
+                            "created": self.created,
+                            "object": "chat.completion",
+                            "model": "gpt-4",
+                            "choices": [{
+                                "message": {
+                                    "role": 'assistant',
+                                    "content": self.fullResponse
+                                },
+                                'finish_reason': 'stop',
+                                'index': 0,
+                            }]
+                        }).encode())
             return self.response
         except Exception as e:
             error = f"Ошибка: {str(e)}."
@@ -448,5 +476,6 @@ if __name__ == '__main__':
           f"Режим creative: http://{HOST}:{PORT}/creative\n"
           f"Режим precise:  http://{HOST}:{PORT}/precise\n"
           f"Режим balanced: http://{HOST}:{PORT}/balanced\n"
-          f"Также есть режим подсказок от Бинга. Чтобы его включить, нужно добавить /suggestion к концу URL, после режима.")
+          f"Есть режим подсказок от Бинга. Чтобы его включить, нужно добавить /suggestion после выбранного режима.\n"
+          f"И еще есть режим переброса, нужный для того чтобы победить шиканье креативной Сидни. Включается добавлением /redirect после режима.")
     web.run_app(app, host=HOST, port=PORT, print=None)
