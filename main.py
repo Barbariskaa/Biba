@@ -31,6 +31,9 @@ REDIRECT_PROXY = config.REDIRECT_PROXY
 REDIRECT_API_KEY = config.REDIRECT_API_KEY
 REDIRECT_API_MODEL = config.REDIRECT_API_MODEL
 REDIRECT_COMMAND = config.REDIRECT_COMMAND
+REDIRECT_TEMPERATURE = config.REDIRECT_TEMPERATURE
+REDIRECT_USE_CONTEXT = config.REDIRECT_USE_CONTEXT
+REDIRECT_CONTEXT_TOKENS = config.REDIRECT_CONTEXT_TOKENS
 
 try:
     cookies = json.loads(open(f"./{COOKIE_NAME}", encoding="utf-8").read())
@@ -385,11 +388,18 @@ class SSEHandler(web.View):
                     print(f"Токенов всего: {tokens_total}")
             if redirect:
                 async with aiohttp.ClientSession() as session:
+                    messages_token_count = len(encoding.encode(f"{self.fullResponse}\n\n{REDIRECT_COMMAND}"))
+                    redirect_messages = [{"role": "user", "content": f"{self.fullResponse}\n\n{REDIRECT_COMMAND}"}]
+                    if REDIRECT_USE_CONTEXT:
+                        for message in reversed(messages):
+                            if (messages_token_count + len(message["content"])) > REDIRECT_CONTEXT_TOKENS: break
+                            messages_token_count += len(message["content"])
+                            redirect_messages.insert(0, message)
                     headers = {"Content-Type": "application/json","Authorization": f"Bearer {REDIRECT_API_KEY}"}
                     body = {
                         "model": REDIRECT_API_MODEL,
-                        "messages": [{"role": "user", "content": f"{self.fullResponse}\n\n{REDIRECT_COMMAND}"}],
-                        "temperature": 0.7,
+                        "messages": redirect_messages,
+                        "temperature": REDIRECT_TEMPERATURE,
                         "stream": stream
                     }
                     if REDIRECT_PROXY.endswith("v1/chat/completions") or REDIRECT_PROXY.endswith("v1/chat/completions/"):
@@ -400,7 +410,14 @@ class SSEHandler(web.View):
                         url = f"{REDIRECT_PROXY}/v1/chat/completions"
                     async with session.post(url, headers=headers, json=body) as response:
                         async for chunk in response.content.iter_chunked(1024):
-                            await self.response.write(chunk)
+                            chunk_str = chunk.decode("utf-8")
+                            if stream and not chunk_str.startswith("data: ") and chunk_str != "\n: joining queue\n\n":
+                                oai_response = prepare_response(self.id, self.created, content="```\n" + chunk_str + "\n```", end=True, done=True, stream=True)
+                                await self.response.write(oai_response)
+                            elif not stream and not "choices" in json.loads(chunk.decode("utf-8")) and chunk.decode("utf-8") != "\n: joining queue\n\n":
+                                oai_response = prepare_response(self.id, self.created, content="```\n" + chunk_str + "\n```", stream=False)
+                                await self.response.write(oai_response)
+                            else: await self.response.write(chunk)
             else:
                 if stream:
                     await self.response.write(b"data: " + json.dumps({
