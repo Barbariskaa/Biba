@@ -1,4 +1,4 @@
 aiohttp==3.8.4
-EdgeGPT==0.6.10
+EdgeGPT==0.11.6
 tiktoken==0.4.0
 typing-extensions==4.6.2
