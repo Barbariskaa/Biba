@@ -182,17 +182,6 @@ class SSEHandler(web.View):
 
     async def post(self):
 
-        async def timeoutHandler(signum, frame):
-            if stream:
-                    oai_response = prepare_response(self.id, self.created, content="Таймаут", end=True, done=True, stream=True)
-            else:
-                oai_response = prepare_response(self.id, self.created, content="Таймаут", stream=False)
-            await self.response.write(oai_response)
-            return self.response
-
-        signal.signal(signal.SIGALRM, timeoutHandler)
-        signal.alarm(10)
-
         self.id = "chatcmpl-" + ''.join(random.choices(string.ascii_letters + string.digits, k=29))
         self.created = str(int(time.time()))
         self.responseWasFiltered = False
