@@ -10,6 +10,7 @@ import tiktoken
 import config
 import requests
 import aiohttp
+import signal
 from urllib.parse import urlparse
 
 PORT = config.PORT
@@ -181,6 +182,17 @@ class SSEHandler(web.View):
 
     async def post(self):
 
+        async def timeoutHandler(signum, frame):
+            if stream:
+                    oai_response = prepare_response(self.id, self.created, content="Таймаут", end=True, done=True, stream=True)
+            else:
+                oai_response = prepare_response(self.id, self.created, content="Таймаут", stream=False)
+            await self.response.write(oai_response)
+            return self.response
+
+        signal.signal(signal.SIGALRM, timeoutHandler)
+        signal.alarm(10)
+
         self.id = "chatcmpl-" + ''.join(random.choices(string.ascii_letters + string.digits, k=29))
         self.created = str(int(time.time()))
         self.responseWasFiltered = False
@@ -222,23 +234,18 @@ class SSEHandler(web.View):
         )
         await self.response.prepare(self.request)
 
-
-        conversation_style = self.request.path.split('/')[1]
-        if conversation_style not in ["creative", "balanced", "precise"]:
+        redirect = suggestion = False
+        path_list = self.request.path.split('/')
+        
+        if path_list[1] not in ["creative", "balanced", "precise"]:
             conversation_style = "creative"
+        else: conversation_style = path_list[1]
 
-        if self.request.path.split('/')[1] == "suggestion":
-            redirect = True
-
-        if self.request.path.split('/')[2] == "suggestion":
+        if "suggestion" in path_list[:2]:
             suggestion = True
-        else:
-            suggestion = False
-
-        if self.request.path.split('/')[2] == "redirect":
+            
+        if "redirect" in path_list[:3]:
             redirect = True
-        else:
-            redirect = False
 
         async def output(self, streamCallback, nsfwMode=False):
             self.responseText = ""
@@ -246,13 +253,22 @@ class SSEHandler(web.View):
             try:
                 chatbot = await Chatbot.create(cookies=cookies)
             except Exception as e:
+                bingError = str(e)
                 if str(e) == "[Errno 11001] getaddrinfo failed":
-                    print("Нет интернет-соединения.")
-                    return
-                print("Ошибка запуска чатбота.", str(e))
-                return
+                    logError = "Нет интернет-соединения: " + bingError
+                if str(e) == "Authentication failed":
+                    logError = "Ошибка аутентификации. Возможно стоит включить VPN: " + bingError
+                print(logError)
+
+                if stream:
+                    oai_response = prepare_response(self.id, self.created, content=logError, end=True, done=True, stream=True)
+                else:
+                    oai_response = prepare_response(self.id, self.created, content=logError, stream=False)
+                await self.response.write(oai_response)
+                
+                return self.response
             
-            print("\nФормируется запрос...")
+            print("\nОжидание ответа от сервера...")
             link_placeholder_replacer = LinkPlaceholderReplacer()
             wrote = 0
 
@@ -332,6 +348,7 @@ class SSEHandler(web.View):
                     if nsfwMode:
                         print("Выходим из цикла.\n")
                         self.responseWasFilteredInLoop = True
+                    break
 
             await chatbot.close()
 
