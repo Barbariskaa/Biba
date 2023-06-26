@@ -245,8 +245,9 @@ class SSEHandler(web.View):
                 bingError = str(e)
                 if str(e) == "[Errno 11001] getaddrinfo failed":
                     logError = "Нет интернет-соединения: " + bingError
-                if str(e) == "Authentication failed":
+                elif str(e) == "Authentication failed":
                     logError = "Ошибка аутентификации. Возможно стоит включить VPN: " + bingError
+                else: logError = "Ошибка: " + bingError
                 print(logError)
 
                 if stream:
