@@ -454,29 +454,27 @@ class SSEHandler(web.View):
                         }).encode())
             return self.response
         except Exception as e:
-            error = f"Ошибка: {str(e)}."
+            error = f"Ошибка: {str(e)}\n"
             error_text = ""
             if str(e) == "'messages'":
-                error_text = "\nПроблема с учеткой. Возможные причины: \n```\n " \
+                error_text = "Проблема с учеткой. Возможные причины: \n```\n " \
                              "  Бан. Фикс: регистрация по новой. \n " \
                              "  Куки слетели. Фикс: собрать их снова. \n " \
                              "  Достигнут лимит сообщений Бинга. Фикс: попробовать разлогиниться и собрать куки, либо собрать их с новой учетки и/или айпи. \n " \
                              "  Возможно Бинг барахлит/троттлит запросы и нужно просто сделать реген/свайп. \n```\n " \
                              "Чтобы узнать подробности можно зайти в сам чат Бинга и отправить сообщение."
-                print(error, error_text)
             elif str(e) == " " or str(e) == "":
                 error_text = "Таймаут."
-                print(error, error_text)
             elif str(e) == "received 1000 (OK); then sent 1000 (OK)" or str(e) == "'int' object has no attribute 'split'":
-                error_text = "Слишком много токенов. Больше 14000 токенов не принимает."
-                print(error, error_text)
+                error_text = "Слишком много токенов. Больше 14000-16000 токенов не принимает."
             elif str(e) == "'contentOrigin'":
                 error_text = "Ошибка связанная с размером промпта. \n " \
                              "Возможно последнее сообщение в отправленном промпте (джейл или сообщение пользователя/ассистента) " \
                              "на сервер слишком большое. \n"
-                print(error, error_text)
+            elif str(e) == "Throttled: Request is throttled.":
+                error_text = "Использован дневной лимит сообщений, нужно сменить куки."
             else:
-                print(error)
+                print(f"{error} {error_text}")
             if not self.fullResponse:
                 if stream:
                     oai_response = prepare_response(self.id, self.created, content=error + error_text, end=True, done=True, stream=True)
