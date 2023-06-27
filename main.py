@@ -1,4 +1,4 @@
-from EdgeGPT import Chatbot
+from EdgeGPT.EdgeGPT import Chatbot
 from aiohttp import web
 import time
 import random
